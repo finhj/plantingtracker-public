@@ -28,6 +28,8 @@ Structural and product decisions for the Planting Tracker project. Entries are n
 | 22 | Added JSON export/import (backup and restore) to both the Claude artifact and the standalone web app, rather than CSV — preserves the full nested data structure exactly. Restoring in the web app replaces the shared data for all users, with a confirmation warning first. |
 | 23 | Downloading real satellite map tiles for an offline zoomable map isn't feasible from Claude's code sandbox (no outbound network access at all) — ruled out for now; static single-image satellite snapshot remains a possible future fallback if OSM/live tiles are still wanted later. |
 
+| 24 | Once the tracker was running as a real deployed web app (outside Claude's sandbox), retried the OpenStreetMap approach — merged the earlier GPS-calibrated Leaflet rendering into the full-featured Supabase web app component (auth, bed direction, auto-grouping, backup/restore all carried over), replacing the static photo as the web app's map. The Claude artifact version keeps the static photo, since tile loading is still blocked inside that sandbox. |
+
 ## Deferred / not yet decided
 - Exact scope of "planting history" tracking (first harvest, last harvest, etc. beyond current anticipated-harvest field).
 - Whether/how to add full-text search across the whole log.

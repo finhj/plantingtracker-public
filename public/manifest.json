@@ -1,0 +1,9 @@
+{
+  "name": "Planting Tracker",
+  "short_name": "Plantings",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#F1EEE2",
+  "theme_color": "#4B6B3A",
+  "icons": []
+}

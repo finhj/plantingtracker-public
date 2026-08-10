@@ -484,6 +484,13 @@ export default function PlantingMap({ username, onSignOut }) {
     return n;
   };
 
+  // Landmark markers (Barn, Chicken World, Goat World, Nature Trail) are hidden
+  // for now. Delete this filter to bring them back.
+  const visibleSections = useMemo(
+    () => allSections.filter((s) => s.type !== "reference"),
+    [allSections]
+  );
+
   const plantedList = useMemo(() => {
     const rows = [];
     allSections.forEach((s) => {
@@ -585,7 +592,7 @@ export default function PlantingMap({ username, onSignOut }) {
 
         <div ref={imgWrapRef} style={{ position: "relative", width: "100%", border: `2px solid ${INK}`, borderRadius: 4, overflow: "hidden", touchAction: editMode ? "none" : "auto" }}>
           <img src={MAP_IMAGE} alt="Farm map" style={{ width: "100%", display: "block", userSelect: "none", pointerEvents: "none" }} draggable={false} />
-          {allSections.map((s) => {
+          {visibleSections.map((s) => {
             const planted = bedsPlantedCount(s);
             const baseColor = TYPE_COLOR[s.type] || REF;
             const color = planted > 0 ? GOLD : baseColor;

@@ -54,3 +54,28 @@ create policy "authenticated delete plantings" on plantings
 insert into farm_locations (id, data, updated_by)
 values ('main', '[]'::jsonb, 'system')
 on conflict (id) do nothing;
+
+-- Realtime: without this, the app's live-sync subscription connects fine but
+-- never receives anything, because Postgres only streams changes for tables
+-- that are members of the supabase_realtime publication. Wrapped in guards so
+-- this whole file stays safe to re-run.
+do $$
+begin
+  if not exists (select 1 from pg_publication where pubname = 'supabase_realtime') then
+    create publication supabase_realtime;
+  end if;
+
+  if not exists (
+    select 1 from pg_publication_tables
+    where pubname = 'supabase_realtime' and schemaname = 'public' and tablename = 'plantings'
+  ) then
+    alter publication supabase_realtime add table public.plantings;
+  end if;
+
+  if not exists (
+    select 1 from pg_publication_tables
+    where pubname = 'supabase_realtime' and schemaname = 'public' and tablename = 'farm_locations'
+  ) then
+    alter publication supabase_realtime add table public.farm_locations;
+  end if;
+end $$;

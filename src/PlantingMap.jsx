@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef, useMemo } from "react";
-import { X, Move, Info, LogOut, Download, Upload } from "lucide-react";
+import { X, Move, Info, LogOut, Download, Upload, MessageSquare } from "lucide-react";
 import { supabase } from "./supabaseClient";
 
 const MAP_IMAGE = "/farm-map.jpg";
@@ -95,7 +95,7 @@ function defaultLocations() {
       sec("f1_se", "SE", 23, 34),
     ]),
     single("f2", "Field 2", "field", 32, 33),
-    field("f3", "Field 3 / Lower Field", [
+    field("f3", "Field 3 / Lower Field / Downstairs", [
       sec("f3_nn", "NN", 60, 10),
       sec("f3_n", "N", 63, 21),
       sec("f3_s", "S", 79, 46),
@@ -212,6 +212,22 @@ async function deleteEntryRowsForBeds(sectionId, aboveBed) {
   await supabase.from("plantings").delete().eq("section_id", sectionId).gt("bed", aboveBed);
 }
 
+// --- Feature ideas ---
+async function loadIdeas() {
+  const { data, error } = await supabase
+    .from("feature_ideas")
+    .select("*")
+    .order("created_at", { ascending: false });
+  if (error || !data) return [];
+  return data;
+}
+async function addIdea(body, username) {
+  const { error } = await supabase
+    .from("feature_ideas")
+    .insert({ id: uid("idea"), body, created_by: username });
+  return !error;
+}
+
 export default function PlantingMap({ username, onSignOut }) {
   const [loading, setLoading] = useState(true);
   const [isDeveloper, setIsDeveloper] = useState(false);
@@ -225,6 +241,7 @@ export default function PlantingMap({ username, onSignOut }) {
   const [error, setError] = useState("");
   const [dragging, setDragging] = useState(null);
   const [importMsg, setImportMsg] = useState("");
+  const [ideasOpen, setIdeasOpen] = useState(false);
   const imgWrapRef = useRef(null);
   const fileInputRef = useRef(null);
 
@@ -268,6 +285,16 @@ export default function PlantingMap({ username, onSignOut }) {
     setError(ok ? "" : "Couldn't save — your last change may not persist.");
     setSaving(false);
   }, [username]);
+
+  // Section names live on the section; the location name lives on its parent,
+  // so renaming a whole field needs its own handler rather than updateSection.
+  const updateLocationName = (locId, name) => {
+    setLocations((prev) => {
+      const next = prev.map((loc) => (loc.id === locId ? { ...loc, name } : loc));
+      persistLocations(next);
+      return next;
+    });
+  };
 
   const updateSection = (sectionId, patch) => {
     setLocations((prev) => {
@@ -474,6 +501,13 @@ export default function PlantingMap({ username, onSignOut }) {
     return n;
   };
 
+  // Landmark markers (Barn, Chicken World, Goat World, Nature Trail) are hidden
+  // for now. Delete this filter to bring them back.
+  const visibleSections = useMemo(
+    () => allSections.filter((s) => s.type !== "reference"),
+    [allSections]
+  );
+
   const plantedList = useMemo(() => {
     const rows = [];
     allSections.forEach((s) => {
@@ -542,7 +576,10 @@ export default function PlantingMap({ username, onSignOut }) {
             <span>Drag any marker to line it up with the real spot on the map. Changes save for everyone.</span>
           </div>
         )}
-        <div style={{ display: "flex", gap: 14, marginTop: 10 }}>
+        <div style={{ display: "flex", gap: 14, marginTop: 10, flexWrap: "wrap" }}>
+          <button className="pm-btn" onClick={() => setIdeasOpen(true)} style={{ display: "flex", alignItems: "center", gap: 5, background: "transparent", color: FIELD, fontSize: 12, fontWeight: 600, padding: 0 }}>
+            <MessageSquare size={13} /> Ideas
+          </button>
           <button className="pm-btn" onClick={handleBackup} style={{ display: "flex", alignItems: "center", gap: 5, background: "transparent", color: FIELD, fontSize: 12, fontWeight: 600, padding: 0 }}>
             <Download size={13} /> Backup (JSON)
           </button>
@@ -575,7 +612,7 @@ export default function PlantingMap({ username, onSignOut }) {
 
         <div ref={imgWrapRef} style={{ position: "relative", width: "100%", border: `2px solid ${INK}`, borderRadius: 4, overflow: "hidden", touchAction: editMode ? "none" : "auto" }}>
           <img src={MAP_IMAGE} alt="Farm map" style={{ width: "100%", display: "block", userSelect: "none", pointerEvents: "none" }} draggable={false} />
-          {allSections.map((s) => {
+          {visibleSections.map((s) => {
             const planted = bedsPlantedCount(s);
             const baseColor = TYPE_COLOR[s.type] || REF;
             const color = planted > 0 ? GOLD : baseColor;
@@ -656,14 +693,22 @@ export default function PlantingMap({ username, onSignOut }) {
         </div>
       )}
 
+      {ideasOpen && (
+        <IdeasPanel username={username} onClose={() => setIdeasOpen(false)} />
+      )}
+
       {sectionPanel && (
         <SectionPanel
+          key={sectionPanel.id}
           section={allSections.find((s) => s.id === sectionPanel.id) || sectionPanel}
           plantings={plantings}
+          isDeveloper={isDeveloper}
           onClose={() => setSectionPanel(null)}
           onSetBeds={(beds) => setSectionBeds(sectionPanel.id, beds)}
           onSetDirection={(direction) => updateSection(sectionPanel.id, { direction })}
           onSetGroupBreakpoints={(bp) => updateSection(sectionPanel.id, { groupBreakpoints: bp })}
+          onRenameLocation={(name) => updateLocationName(sectionPanel.locId, name)}
+          onRenameSection={(name) => updateSection(sectionPanel.id, { name })}
           onOpenBed={(bed) => setBedPanel({ section: sectionPanel, bed })}
         />
       )}
@@ -734,8 +779,10 @@ function BedTile({ bed, entries, onClick }) {
 
 const BAND_THRESHOLD = 12;
 
-function SectionPanel({ section, plantings, onClose, onSetBeds, onSetDirection, onSetGroupBreakpoints, onOpenBed }) {
+function SectionPanel({ section, plantings, isDeveloper, onClose, onSetBeds, onSetDirection, onSetGroupBreakpoints, onRenameLocation, onRenameSection, onOpenBed }) {
   const [bedsInput, setBedsInput] = useState(section.beds);
+  const [locNameInput, setLocNameInput] = useState(section.locName);
+  const [secNameInput, setSecNameInput] = useState(section.name);
   const [jumpVal, setJumpVal] = useState("");
   const [expanded, setExpanded] = useState({});
   const [editingGroups, setEditingGroups] = useState(false);
@@ -748,6 +795,17 @@ function SectionPanel({ section, plantings, onClose, onSetBeds, onSetDirection, 
     const n = Math.max(1, Math.min(200, Math.round(Number(val) || 1)));
     setBedsInput(n);
     if (n !== section.beds) onSetBeds(n);
+  };
+
+  const commitLocName = () => {
+    const v = locNameInput.trim();
+    if (!v) return setLocNameInput(section.locName);   // blank isn't a name
+    if (v !== section.locName) onRenameLocation(v);
+  };
+  const commitSecName = () => {
+    const v = secNameInput.trim();
+    if (!v) return setSecNameInput(section.name);
+    if (v !== section.name) onRenameSection(v);
   };
 
   const handleJump = () => {
@@ -777,6 +835,35 @@ function SectionPanel({ section, plantings, onClose, onSetBeds, onSetDirection, 
 
   return (
     <ModalShell title={title} onClose={onClose} maxWidth={460}>
+      {isDeveloper && (
+        <div style={{ background: "#F8F6EF", border: "1px solid #E6E0D0", borderRadius: 3, padding: 12, marginBottom: 16 }}>
+          <label style={labelStyle}>{section.multi ? "Field name" : "Name"}</label>
+          <input
+            style={{ ...fieldStyle, marginBottom: section.multi ? 12 : 0 }}
+            value={locNameInput}
+            onChange={(e) => setLocNameInput(e.target.value)}
+            onBlur={commitLocName}
+            onKeyDown={(e) => e.key === "Enter" && e.currentTarget.blur()}
+          />
+          {section.multi && (
+            <>
+              <label style={labelStyle}>Section name</label>
+              <input
+                style={{ ...fieldStyle, marginBottom: 0 }}
+                value={secNameInput}
+                onChange={(e) => setSecNameInput(e.target.value)}
+                onBlur={commitSecName}
+                onKeyDown={(e) => e.key === "Enter" && e.currentTarget.blur()}
+              />
+            </>
+          )}
+          <div style={{ fontSize: 12, color: "#8a8272", marginTop: 8 }}>
+            {section.multi
+              ? "Renaming the field renames it everywhere, including its other sections."
+              : "Saves for everyone as soon as you tap away."}
+          </div>
+        </div>
+      )}
       <div style={{ marginBottom: 16 }}>
         <label style={labelStyle}>Bed 1 starts at</label>
         <div style={{ display: "flex", gap: 8, marginBottom: 6 }}>
@@ -889,6 +976,76 @@ function SectionPanel({ section, plantings, onClose, onSetBeds, onSetDirection, 
 
       <div style={{ fontSize: 12, color: "#8a8272", marginTop: 12 }}>
         Tap a bed to see or add plantings — a bed can hold more than one if it's split between crops.
+      </div>
+    </ModalShell>
+  );
+}
+
+function IdeasPanel({ username, onClose }) {
+  const [ideas, setIdeas] = useState(null); // null = still loading
+  const [draft, setDraft] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+
+  const refresh = useCallback(async () => setIdeas(await loadIdeas()), []);
+  useEffect(() => { refresh(); }, [refresh]);
+
+  const submit = async () => {
+    const body = draft.trim();
+    if (!body) return;
+    setBusy(true);
+    const ok = await addIdea(body, username);
+    setBusy(false);
+    if (!ok) return setErr("Couldn't post that — try again.");
+    setDraft("");
+    setErr("");
+    refresh();
+  };
+
+  return (
+    <ModalShell title="Feature ideas" onClose={onClose} maxWidth={460}>
+      <label style={labelStyle}>Suggest something</label>
+      <textarea
+        style={{ ...fieldStyle, minHeight: 70, resize: "vertical", marginBottom: 8 }}
+        value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+        placeholder="What would make this easier to use?"
+      />
+      {err && <div style={{ color: RUST, fontSize: 13, marginBottom: 8 }}>{err}</div>}
+      <button
+        className="pm-btn"
+        onClick={submit}
+        disabled={busy || !draft.trim()}
+        style={{ width: "100%", background: draft.trim() ? FIELD : "#CFC7B0", color: "#fff", padding: "10px", borderRadius: 3, fontWeight: 600, fontSize: 14, marginBottom: 18 }}
+      >
+        {busy ? "Posting…" : "Post idea"}
+      </button>
+
+      <div style={{ fontSize: 12, letterSpacing: 1, textTransform: "uppercase", color: "#6B6255", marginBottom: 10, fontFamily: "'IBM Plex Mono', monospace" }}>
+        {ideas === null ? "Loading…" : `${ideas.length} idea${ideas.length === 1 ? "" : "s"}`}
+      </div>
+
+      {ideas !== null && ideas.length === 0 && (
+        <div style={{ fontSize: 14, color: "#8a8272" }}>Nothing suggested yet — go first.</div>
+      )}
+
+      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+        {(ideas || []).map((idea) => (
+          <div
+            key={idea.id}
+            style={{ padding: "10px 12px", borderRadius: 3, background: "#fff", border: "1px solid #E6E0D0", borderLeft: `4px solid ${GOLD}` }}
+          >
+            <div style={{ fontSize: 14, whiteSpace: "pre-wrap" }}>{idea.body}</div>
+            <div style={{ fontSize: 12, color: "#8a8272", marginTop: 6, fontFamily: "'IBM Plex Mono', monospace" }}>
+              {idea.created_by}
+              {idea.created_at ? ` · ${new Date(idea.created_at).toLocaleDateString()}` : ""}
+            </div>
+          </div>
+        ))}
+      </div>
+
+      <div style={{ fontSize: 12, color: "#8a8272", marginTop: 14 }}>
+        Everyone signed in can see these. Your name goes on whatever you post.
       </div>
     </ModalShell>
   );

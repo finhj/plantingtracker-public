@@ -598,7 +598,7 @@ export default function PlantingMap({ username, onSignOut }) {
                 </div>
                 {(editMode || s.type === "reference") && (
                   <div style={{
-                    position: "absolute", top: size + 3, left: "50%", transform: "translateX(-50%)",
+                    position: "absolute", top: "50%", left: size + 4, transform: "translateY(-50%)",
                     fontSize: 10, whiteSpace: "nowrap", background: "rgba(255,255,255,0.9)",
                     padding: "1px 4px", borderRadius: 2, fontFamily: "'IBM Plex Mono', monospace",
                     color: INK, pointerEvents: "none",

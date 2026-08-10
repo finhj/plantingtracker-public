@@ -136,6 +136,19 @@ function defaultLocations() {
 }
 
 // --- Supabase storage layer (replaces window.storage from the artifact version) ---
+// Developer status lives in the farm_roles table, not in the app, so adding or
+// removing a developer later is one row in Supabase rather than a code change.
+// This only controls what the UI offers — the database enforces it for real.
+async function loadIsDeveloper(username) {
+  const { data, error } = await supabase
+    .from("farm_roles")
+    .select("is_developer")
+    .eq("username", username)
+    .maybeSingle();
+  if (error || !data) return false;
+  return !!data.is_developer;
+}
+
 async function loadLocations() {
   const { data, error } = await supabase.from("farm_locations").select("data").eq("id", "main").single();
   if (error || !data || !data.data || !data.data.length) return null;
@@ -201,6 +214,7 @@ async function deleteEntryRowsForBeds(sectionId, aboveBed) {
 
 export default function PlantingMap({ username, onSignOut }) {
   const [loading, setLoading] = useState(true);
+  const [isDeveloper, setIsDeveloper] = useState(false);
   const [saving, setSaving] = useState(false);
   const [locations, setLocations] = useState([]);
   const [plantings, setPlantings] = useState({});
@@ -217,12 +231,16 @@ export default function PlantingMap({ username, onSignOut }) {
   // Initial load
   useEffect(() => {
     (async () => {
+      const dev = await loadIsDeveloper(username);
       let locs = await loadLocations();
       if (!locs) {
+        // Fall back to the built-in layout, but only a developer is allowed to
+        // write it back as the shared one — everyone else just views it.
         locs = defaultLocations();
-        await seedLocations(locs, username);
+        if (dev) await seedLocations(locs, username);
       }
       const plants = await loadPlantings();
+      setIsDeveloper(dev);
       setLocations(locs);
       setPlantings(plants);
       setLoading(false);
@@ -402,7 +420,7 @@ export default function PlantingMap({ username, onSignOut }) {
   };
 
   const handlePointerDown = (sectionId) => (e) => {
-    if (!editMode) return;
+    if (!editMode || !isDeveloper) return;
     e.preventDefault();
     e.stopPropagation();
     setDragging(sectionId);
@@ -501,20 +519,22 @@ export default function PlantingMap({ username, onSignOut }) {
         </div>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 10, marginTop: 4 }}>
           <h1 style={{ fontFamily: "'Zilla Slab', serif", fontWeight: 700, fontSize: 28, margin: 0 }}>Planting Map</h1>
-          <div style={{ display: "flex", gap: 8 }}>
-            {editMode && (
-              <button className="pm-btn" onClick={resetPositions} style={{ background: "transparent", border: `1.5px solid ${INK}`, color: INK, padding: "9px 12px", borderRadius: 3, fontSize: 13, fontWeight: 600 }}>
-                Reset positions
+          {isDeveloper && (
+            <div style={{ display: "flex", gap: 8 }}>
+              {editMode && (
+                <button className="pm-btn" onClick={resetPositions} style={{ background: "transparent", border: `1.5px solid ${INK}`, color: INK, padding: "9px 12px", borderRadius: 3, fontSize: 13, fontWeight: 600 }}>
+                  Reset positions
+                </button>
+              )}
+              <button
+                className="pm-btn"
+                onClick={() => setEditMode((v) => !v)}
+                style={{ display: "flex", alignItems: "center", gap: 6, background: editMode ? GOLD : INK, color: "#fff", padding: "9px 14px", borderRadius: 3, fontSize: 13, fontWeight: 600 }}
+              >
+                <Move size={14} /> {editMode ? "Done adjusting" : "Adjust positions"}
               </button>
-            )}
-            <button
-              className="pm-btn"
-              onClick={() => setEditMode((v) => !v)}
-              style={{ display: "flex", alignItems: "center", gap: 6, background: editMode ? GOLD : INK, color: "#fff", padding: "9px 14px", borderRadius: 3, fontSize: 13, fontWeight: 600 }}
-            >
-              <Move size={14} /> {editMode ? "Done adjusting" : "Adjust positions"}
-            </button>
-          </div>
+            </div>
+          )}
         </div>
         {editMode && (
           <div style={{ marginTop: 10, fontSize: 13, color: "#6B6255", display: "flex", gap: 6 }}>
@@ -526,10 +546,14 @@ export default function PlantingMap({ username, onSignOut }) {
           <button className="pm-btn" onClick={handleBackup} style={{ display: "flex", alignItems: "center", gap: 5, background: "transparent", color: FIELD, fontSize: 12, fontWeight: 600, padding: 0 }}>
             <Download size={13} /> Backup (JSON)
           </button>
-          <button className="pm-btn" onClick={() => fileInputRef.current && fileInputRef.current.click()} style={{ display: "flex", alignItems: "center", gap: 5, background: "transparent", color: FIELD, fontSize: 12, fontWeight: 600, padding: 0 }}>
-            <Upload size={13} /> Restore from backup
-          </button>
-          <input ref={fileInputRef} type="file" accept="application/json" onChange={handleRestoreFile} style={{ display: "none" }} />
+          {isDeveloper && (
+            <>
+              <button className="pm-btn" onClick={() => fileInputRef.current && fileInputRef.current.click()} style={{ display: "flex", alignItems: "center", gap: 5, background: "transparent", color: FIELD, fontSize: 12, fontWeight: 600, padding: 0 }}>
+                <Upload size={13} /> Restore from backup
+              </button>
+              <input ref={fileInputRef} type="file" accept="application/json" onChange={handleRestoreFile} style={{ display: "none" }} />
+            </>
+          )}
         </div>
         {importMsg && <div style={{ marginTop: 6, fontSize: 12, color: FIELD }}>{importMsg}</div>}
         {error && <div style={{ marginTop: 8, color: RUST, fontSize: 13 }}>{error}</div>}
@@ -574,7 +598,7 @@ export default function PlantingMap({ username, onSignOut }) {
                 </div>
                 {(editMode || s.type === "reference") && (
                   <div style={{
-                    position: "absolute", top: size + 3, left: "50%", transform: "translateX(-50%)",
+                    position: "absolute", top: "50%", left: size + 4, transform: "translateY(-50%)",
                     fontSize: 10, whiteSpace: "nowrap", background: "rgba(255,255,255,0.9)",
                     padding: "1px 4px", borderRadius: 2, fontFamily: "'IBM Plex Mono', monospace",
                     color: INK, pointerEvents: "none",

@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { X, Move, Info, LogOut, Download, Upload, MessageSquare } from "lucide-react";
 import { supabase } from "./supabaseClient";
+import { loadCache, saveCache, enqueue, getQueue, flushQueue, isOnline } from "./offline";
 
 const MAP_IMAGE = "/farm-map.jpg";
 
@@ -186,7 +187,7 @@ async function loadPlantings() {
   });
   return grouped;
 }
-async function saveEntryRow(sectionId, bed, entry, username, isNew) {
+function buildEntryRow(sectionId, bed, entry, username, isNew) {
   const row = {
     id: entry.id,
     section_id: sectionId,
@@ -201,12 +202,7 @@ async function saveEntryRow(sectionId, bed, entry, username, isNew) {
     updated_at: new Date().toISOString(),
   };
   if (isNew) row.created_by = username;
-  const { error } = await supabase.from("plantings").upsert(row);
-  return !error;
-}
-async function deleteEntryRow(id) {
-  const { error } = await supabase.from("plantings").delete().eq("id", id);
-  return !error;
+  return row;
 }
 async function deleteEntryRowsForBeds(sectionId, aboveBed) {
   await supabase.from("plantings").delete().eq("section_id", sectionId).gt("bed", aboveBed);
@@ -242,12 +238,29 @@ export default function PlantingMap({ username, onSignOut }) {
   const [dragging, setDragging] = useState(null);
   const [importMsg, setImportMsg] = useState("");
   const [ideasOpen, setIdeasOpen] = useState(false);
+  const [online, setOnline] = useState(isOnline());
+  const [pending, setPending] = useState(getQueue().length);
   const imgWrapRef = useRef(null);
   const fileInputRef = useRef(null);
 
   // Initial load
   useEffect(() => {
     (async () => {
+      // Show cached data immediately so the app is usable with no signal.
+      const cached = loadCache();
+      if (cached) {
+        setLocations(cached.locations || []);
+        setPlantings(cached.plantings || {});
+        setIsDeveloper(!!cached.isDeveloper);
+        setLoading(false);
+      }
+
+      if (!isOnline()) {
+        if (!cached) setError("No connection, and nothing saved on this device yet. Open the app once with signal.");
+        setLoading(false);
+        return;
+      }
+
       const dev = await loadIsDeveloper(username);
       let locs = await loadLocations();
       if (!locs) {
@@ -269,6 +282,9 @@ export default function PlantingMap({ username, onSignOut }) {
     const channel = supabase
       .channel("planting-map-live")
       .on("postgres_changes", { event: "*", schema: "public", table: "plantings" }, async () => {
+        // Skip the refresh while we still owe the server writes — otherwise
+        // the incoming server state would overwrite them.
+        if (getQueue().length) return;
         setPlantings(await loadPlantings());
       })
       .on("postgres_changes", { event: "*", schema: "public", table: "farm_locations" }, async () => {
@@ -279,7 +295,50 @@ export default function PlantingMap({ username, onSignOut }) {
     return () => supabase.removeChannel(channel);
   }, []);
 
+  // Sends anything queued, then pulls fresh server data so this device matches
+  // everyone else. Flush first, or the refetch would wipe unsent local edits.
+  const syncNow = useCallback(async () => {
+    if (!isOnline()) {
+      setPending(getQueue().length);
+      return;
+    }
+    const { remaining, failed } = await flushQueue();
+    setPending(remaining);
+    if (failed) {
+      setError("Some changes couldn't be sent yet — they're still saved on this device.");
+      return;
+    }
+    setError("");
+    if (remaining === 0) setPlantings(await loadPlantings());
+  }, []);
+
+  // Reconnecting is the moment to catch up.
+  useEffect(() => {
+    const goOnline = () => { setOnline(true); syncNow(); };
+    const goOffline = () => setOnline(false);
+    window.addEventListener("online", goOnline);
+    window.addEventListener("offline", goOffline);
+    return () => {
+      window.removeEventListener("online", goOnline);
+      window.removeEventListener("offline", goOffline);
+    };
+  }, [syncNow]);
+
+  // Send anything left over from a previous session.
+  useEffect(() => {
+    if (!loading) syncNow();
+  }, [loading, syncNow]);
+
+  // Keep the on-device copy current so the next cold start has something.
+  useEffect(() => {
+    if (!loading) saveCache(locations, plantings, isDeveloper);
+  }, [locations, plantings, isDeveloper, loading]);
+
   const persistLocations = useCallback(async (nextLocations) => {
+    if (!isOnline()) {
+      setError("Map layout changes need a connection — this one wasn't saved.");
+      return;
+    }
     setSaving(true);
     const ok = await saveLocations(nextLocations, username);
     setError(ok ? "" : "Couldn't save — your last change may not persist.");
@@ -328,10 +387,9 @@ export default function PlantingMap({ username, onSignOut }) {
   };
 
   const saveEntry = async (sectionId, bed, entry, isNew) => {
-    setSaving(true);
-    const ok = await saveEntryRow(sectionId, bed, entry, username, isNew);
-    setError(ok ? "" : "Couldn't save that planting — try again.");
-    setSaving(false);
+    // Always record locally and queue, online or not. One path, so a planting
+    // logged in a dead spot behaves exactly like one logged in the yard.
+    setPending(enqueue({ type: "upsert", row: buildEntryRow(sectionId, bed, entry, username, isNew) }));
     setPlantings((prev) => {
       const key = bedKey(sectionId, bed);
       const list = prev[key] || [];
@@ -340,11 +398,10 @@ export default function PlantingMap({ username, onSignOut }) {
       return { ...prev, [key]: nextList };
     });
     setEntryModal(null);
+    syncNow();
   };
   const deleteEntry = async (sectionId, bed, entryId) => {
-    setSaving(true);
-    await deleteEntryRow(entryId);
-    setSaving(false);
+    setPending(enqueue({ type: "delete", id: entryId }));
     setPlantings((prev) => {
       const key = bedKey(sectionId, bed);
       const nextList = (prev[key] || []).filter((e) => e.id !== entryId);
@@ -354,6 +411,7 @@ export default function PlantingMap({ username, onSignOut }) {
       return next;
     });
     setEntryModal(null);
+    syncNow();
   };
 
   const resetPositions = () => {
@@ -592,6 +650,14 @@ export default function PlantingMap({ username, onSignOut }) {
             </>
           )}
         </div>
+        {(!online || pending > 0) && (
+          <div style={{ marginTop: 10, fontSize: 13, padding: "8px 10px", borderRadius: 3, background: online ? "#F3EEDC" : "#EFE6DC", border: `1px solid ${online ? GOLD : RUST}`, color: INK }}>
+            {!online && <strong>Offline. </strong>}
+            {pending > 0
+              ? `${pending} change${pending === 1 ? "" : "s"} saved on this device, waiting to send.`
+              : "Your plantings are saved here and will send when you're back in range."}
+          </div>
+        )}
         {importMsg && <div style={{ marginTop: 6, fontSize: 12, color: FIELD }}>{importMsg}</div>}
         {error && <div style={{ marginTop: 8, color: RUST, fontSize: 13 }}>{error}</div>}
       </header>
@@ -793,8 +859,31 @@ function SectionPanel({ section, plantings, isDeveloper, onClose, onSetBeds, onS
 
   const commitBeds = (val) => {
     const n = Math.max(1, Math.min(200, Math.round(Number(val) || 1)));
+    if (n === section.beds) return setBedsInput(n);
+
+    // Shrinking deletes everything recorded above the new count, for everyone.
+    // Say exactly what's about to be lost rather than asking vaguely.
+    if (n < section.beds) {
+      let lostEntries = 0;
+      let lostBeds = 0;
+      for (let b = n + 1; b <= section.beds; b++) {
+        const entries = plantings[bedKey(section.id, b)] || [];
+        if (entries.length) {
+          lostEntries += entries.length;
+          lostBeds++;
+        }
+      }
+      if (lostEntries > 0) {
+        const msg =
+          `Reducing to ${n} beds permanently deletes ${lostEntries} planting${lostEntries === 1 ? "" : "s"} ` +
+          `recorded in ${lostBeds} bed${lostBeds === 1 ? "" : "s"} (beds ${n + 1}–${section.beds}).\n\n` +
+          `This affects everyone and can't be undone. Continue?`;
+        if (!confirm(msg)) return setBedsInput(section.beds);
+      }
+    }
+
     setBedsInput(n);
-    if (n !== section.beds) onSetBeds(n);
+    onSetBeds(n);
   };
 
   const commitLocName = () => {
@@ -866,6 +955,7 @@ function SectionPanel({ section, plantings, isDeveloper, onClose, onSetBeds, onS
       )}
       <div style={{ marginBottom: 16 }}>
         <label style={labelStyle}>Bed 1 starts at</label>
+        {isDeveloper && (
         <div style={{ display: "flex", gap: 8, marginBottom: 6 }}>
           <button
             className="pm-btn"
@@ -882,6 +972,7 @@ function SectionPanel({ section, plantings, isDeveloper, onClose, onSetBeds, onS
             East end
           </button>
         </div>
+        )}
         <div style={{ fontSize: 12, color: "#6B6255" }}>
           {direction === "N" ? "Beds run north → south, Bed 1 at the north end." : "Beds run east → west, Bed 1 at the east end."}
         </div>
@@ -889,16 +980,20 @@ function SectionPanel({ section, plantings, isDeveloper, onClose, onSetBeds, onS
 
       <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 16 }}>
         <label style={{ ...labelStyle, marginBottom: 0 }}>Number of beds</label>
-        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-          <button className="pm-btn" onClick={() => commitBeds(bedsInput - 1)} style={{ width: 28, height: 28, borderRadius: 3, background: INK, color: "#fff", fontWeight: 700 }}>−</button>
-          <input
-            style={{ width: 48, textAlign: "center", padding: "5px 4px", borderRadius: 3, border: "1.5px solid #CFC7B0" }}
-            type="number" min={1} max={200} value={bedsInput}
-            onChange={(e) => setBedsInput(e.target.value)}
-            onBlur={(e) => commitBeds(e.target.value)}
-          />
-          <button className="pm-btn" onClick={() => commitBeds(bedsInput + 1)} style={{ width: 28, height: 28, borderRadius: 3, background: INK, color: "#fff", fontWeight: 700 }}>+</button>
-        </div>
+        {isDeveloper ? (
+          <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+            <button className="pm-btn" onClick={() => commitBeds(Number(bedsInput) - 1)} style={{ width: 28, height: 28, borderRadius: 3, background: INK, color: "#fff", fontWeight: 700 }}>−</button>
+            <input
+              style={{ width: 48, textAlign: "center", padding: "5px 4px", borderRadius: 3, border: "1.5px solid #CFC7B0" }}
+              type="number" min={1} max={200} value={bedsInput}
+              onChange={(e) => setBedsInput(e.target.value)}
+              onBlur={(e) => commitBeds(e.target.value)}
+            />
+            <button className="pm-btn" onClick={() => commitBeds(Number(bedsInput) + 1)} style={{ width: 28, height: 28, borderRadius: 3, background: INK, color: "#fff", fontWeight: 700 }}>+</button>
+          </div>
+        ) : (
+          <span style={{ fontWeight: 600, fontSize: 15 }}>{section.beds}</span>
+        )}
       </div>
 
       <div style={{ marginBottom: 18 }}>
@@ -919,9 +1014,11 @@ function SectionPanel({ section, plantings, isDeveloper, onClose, onSetBeds, onS
         <div>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
             <label style={{ ...labelStyle, marginBottom: 0 }}>Groups ({bands.length})</label>
-            <button className="pm-btn" onClick={openGroupEditor} style={{ background: "transparent", color: FIELD, fontSize: 12, fontWeight: 600, textDecoration: "underline" }}>
-              {section.groupBreakpoints && section.groupBreakpoints.length ? "Edit groups" : "Adjust groupings"}
-            </button>
+            {isDeveloper && (
+              <button className="pm-btn" onClick={openGroupEditor} style={{ background: "transparent", color: FIELD, fontSize: 12, fontWeight: 600, textDecoration: "underline" }}>
+                {section.groupBreakpoints && section.groupBreakpoints.length ? "Edit groups" : "Adjust groupings"}
+              </button>
+            )}
           </div>
 
           {editingGroups && (

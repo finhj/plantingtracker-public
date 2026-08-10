@@ -95,7 +95,7 @@ function defaultLocations() {
       sec("f1_se", "SE", 23, 34),
     ]),
     single("f2", "Field 2", "field", 32, 33),
-    field("f3", "Field 3 / Lower Field", [
+    field("f3", "Field 3 / Lower Field / Downstairs", [
       sec("f3_nn", "NN", 60, 10),
       sec("f3_n", "N", 63, 21),
       sec("f3_s", "S", 79, 46),
@@ -268,6 +268,16 @@ export default function PlantingMap({ username, onSignOut }) {
     setError(ok ? "" : "Couldn't save — your last change may not persist.");
     setSaving(false);
   }, [username]);
+
+  // Section names live on the section; the location name lives on its parent,
+  // so renaming a whole field needs its own handler rather than updateSection.
+  const updateLocationName = (locId, name) => {
+    setLocations((prev) => {
+      const next = prev.map((loc) => (loc.id === locId ? { ...loc, name } : loc));
+      persistLocations(next);
+      return next;
+    });
+  };
 
   const updateSection = (sectionId, patch) => {
     setLocations((prev) => {
@@ -658,12 +668,16 @@ export default function PlantingMap({ username, onSignOut }) {
 
       {sectionPanel && (
         <SectionPanel
+          key={sectionPanel.id}
           section={allSections.find((s) => s.id === sectionPanel.id) || sectionPanel}
           plantings={plantings}
+          isDeveloper={isDeveloper}
           onClose={() => setSectionPanel(null)}
           onSetBeds={(beds) => setSectionBeds(sectionPanel.id, beds)}
           onSetDirection={(direction) => updateSection(sectionPanel.id, { direction })}
           onSetGroupBreakpoints={(bp) => updateSection(sectionPanel.id, { groupBreakpoints: bp })}
+          onRenameLocation={(name) => updateLocationName(sectionPanel.locId, name)}
+          onRenameSection={(name) => updateSection(sectionPanel.id, { name })}
           onOpenBed={(bed) => setBedPanel({ section: sectionPanel, bed })}
         />
       )}
@@ -734,8 +748,10 @@ function BedTile({ bed, entries, onClick }) {
 
 const BAND_THRESHOLD = 12;
 
-function SectionPanel({ section, plantings, onClose, onSetBeds, onSetDirection, onSetGroupBreakpoints, onOpenBed }) {
+function SectionPanel({ section, plantings, isDeveloper, onClose, onSetBeds, onSetDirection, onSetGroupBreakpoints, onRenameLocation, onRenameSection, onOpenBed }) {
   const [bedsInput, setBedsInput] = useState(section.beds);
+  const [locNameInput, setLocNameInput] = useState(section.locName);
+  const [secNameInput, setSecNameInput] = useState(section.name);
   const [jumpVal, setJumpVal] = useState("");
   const [expanded, setExpanded] = useState({});
   const [editingGroups, setEditingGroups] = useState(false);
@@ -748,6 +764,17 @@ function SectionPanel({ section, plantings, onClose, onSetBeds, onSetDirection, 
     const n = Math.max(1, Math.min(200, Math.round(Number(val) || 1)));
     setBedsInput(n);
     if (n !== section.beds) onSetBeds(n);
+  };
+
+  const commitLocName = () => {
+    const v = locNameInput.trim();
+    if (!v) return setLocNameInput(section.locName);   // blank isn't a name
+    if (v !== section.locName) onRenameLocation(v);
+  };
+  const commitSecName = () => {
+    const v = secNameInput.trim();
+    if (!v) return setSecNameInput(section.name);
+    if (v !== section.name) onRenameSection(v);
   };
 
   const handleJump = () => {
@@ -777,6 +804,35 @@ function SectionPanel({ section, plantings, onClose, onSetBeds, onSetDirection, 
 
   return (
     <ModalShell title={title} onClose={onClose} maxWidth={460}>
+      {isDeveloper && (
+        <div style={{ background: "#F8F6EF", border: "1px solid #E6E0D0", borderRadius: 3, padding: 12, marginBottom: 16 }}>
+          <label style={labelStyle}>{section.multi ? "Field name" : "Name"}</label>
+          <input
+            style={{ ...fieldStyle, marginBottom: section.multi ? 12 : 0 }}
+            value={locNameInput}
+            onChange={(e) => setLocNameInput(e.target.value)}
+            onBlur={commitLocName}
+            onKeyDown={(e) => e.key === "Enter" && e.currentTarget.blur()}
+          />
+          {section.multi && (
+            <>
+              <label style={labelStyle}>Section name</label>
+              <input
+                style={{ ...fieldStyle, marginBottom: 0 }}
+                value={secNameInput}
+                onChange={(e) => setSecNameInput(e.target.value)}
+                onBlur={commitSecName}
+                onKeyDown={(e) => e.key === "Enter" && e.currentTarget.blur()}
+              />
+            </>
+          )}
+          <div style={{ fontSize: 12, color: "#8a8272", marginTop: 8 }}>
+            {section.multi
+              ? "Renaming the field renames it everywhere, including its other sections."
+              : "Saves for everyone as soon as you tap away."}
+          </div>
+        </div>
+      )}
       <div style={{ marginBottom: 16 }}>
         <label style={labelStyle}>Bed 1 starts at</label>
         <div style={{ display: "flex", gap: 8, marginBottom: 6 }}>

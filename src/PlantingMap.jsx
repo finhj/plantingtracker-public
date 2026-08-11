@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef, useMemo } from "react";
-import { X, Move, Info, LogOut, Download, Upload, MessageSquare } from "lucide-react";
+import { X, Move, Info, LogOut, Download, Upload, MessageSquare, Search } from "lucide-react";
 import { supabase } from "./supabaseClient";
 import { loadCache, saveCache, enqueue, getQueue, flushQueue, isOnline } from "./offline";
 
@@ -238,6 +238,7 @@ export default function PlantingMap({ username, onSignOut }) {
   const [dragging, setDragging] = useState(null);
   const [importMsg, setImportMsg] = useState("");
   const [ideasOpen, setIdeasOpen] = useState(false);
+  const [query, setQuery] = useState("");
   const [online, setOnline] = useState(isOnline());
   const [pending, setPending] = useState(getQueue().length);
   const imgWrapRef = useRef(null);
@@ -577,6 +578,28 @@ export default function PlantingMap({ username, onSignOut }) {
     return rows.sort((a, b) => a.section.locName.localeCompare(b.section.locName) || a.bed - b.bed);
   }, [allSections, plantings]);
 
+  // Search matches crop or variety, and also the location name so "field 3"
+  // works as a way to narrow down. Beds keep any entry that matches.
+  const filteredList = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    if (!q) return plantedList;
+    return plantedList
+      .map(({ section, bed, entries }) => {
+        const locHit =
+          (section.locName || "").toLowerCase().includes(q) ||
+          (section.name || "").toLowerCase().includes(q);
+        const hits = entries.filter(
+          (e) =>
+            locHit ||
+            (e.crop || "").toLowerCase().includes(q) ||
+            (e.variety || "").toLowerCase().includes(q)
+        );
+        return { section, bed, entries: hits };
+      })
+      .filter((row) => row.entries.length > 0);
+  }, [plantedList, query]);
+
+
   if (loading) {
     return (
       <div style={{ background: PAPER, minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "'IBM Plex Sans', sans-serif", color: INK }}>
@@ -716,13 +739,36 @@ export default function PlantingMap({ username, onSignOut }) {
 
         <div style={{ marginTop: 22 }}>
           <div style={{ fontSize: 12, letterSpacing: 1, textTransform: "uppercase", color: "#6B6255", marginBottom: 10, fontFamily: "'IBM Plex Mono', monospace" }}>
-            Currently planted ({plantedList.length} beds)
+            Currently planted ({filteredList.length}{query.trim() ? ` of ${plantedList.length}` : ""} beds)
           </div>
-          {plantedList.length === 0 ? (
-            <div style={{ fontSize: 14, color: "#8a8272" }}>Nothing planted yet — tap any dot on the map, then tap a bed.</div>
+          <div style={{ position: "relative", marginBottom: 10 }}>
+            <Search size={14} style={{ position: "absolute", left: 10, top: "50%", transform: "translateY(-50%)", color: "#8a8272" }} />
+            <input
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="Search crop, variety or field"
+              style={{ width: "100%", padding: "9px 30px 9px 30px", borderRadius: 3, border: "1.5px solid #CFC7B0", fontSize: 14, boxSizing: "border-box", background: "#fff" }}
+            />
+            {query && (
+              <button
+                className="pm-btn"
+                onClick={() => setQuery("")}
+                title="Clear search"
+                style={{ position: "absolute", right: 6, top: "50%", transform: "translateY(-50%)", background: "transparent", color: "#8a8272", display: "flex", alignItems: "center", padding: 4 }}
+              >
+                <X size={14} />
+              </button>
+            )}
+          </div>
+          {filteredList.length === 0 ? (
+            <div style={{ fontSize: 14, color: "#8a8272" }}>
+              {query.trim()
+                ? `Nothing matching "${query.trim()}".`
+                : "Nothing planted yet — tap any dot on the map, then tap a bed."}
+            </div>
           ) : (
             <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-              {plantedList.map(({ section, bed, entries }) => {
+              {filteredList.map(({ section, bed, entries }) => {
                 const anyReady = entries.some((p) => p.expectedHarvest && daysBetween(new Date(), p.expectedHarvest) <= 0);
                 return (
                   <div
@@ -735,7 +781,7 @@ export default function PlantingMap({ username, onSignOut }) {
                         {section.multi ? `${section.locName} — ${section.name}` : section.locName}
                         {section.beds > 1 ? ` · Bed ${bed}` : ""}
                       </span>
-                      <span style={{ color: "#6B6255" }}>{" · "}{entries.map((e) => e.crop).join(", ")}</span>
+                      <span style={{ color: "#6B6255" }}>{" · "}{entries.map((e) => (e.variety ? `${e.crop} (${e.variety})` : e.crop)).join(", ")}</span>
                       <div style={{ fontSize: 12, color: "#6B6255", fontFamily: "'IBM Plex Mono', monospace" }}>
                         {entries.length > 1 ? `${entries.length} plantings sharing this bed` : `Planted ${entries[0].plantedDate || "—"}`}
                       </div>

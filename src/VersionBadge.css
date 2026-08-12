@@ -1,0 +1,43 @@
+/*
+ * Deliberately inherits color from its parent rather than declaring its own,
+ * so it stays legible against whatever the surrounding header uses and cannot
+ * fall below the contrast ratio that parent already meets.
+ *
+ * No animation or transition, per project standing constraints.
+ */
+
+.version-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35em;
+  font-size: 0.8125rem; /* ~13px: small, but still readable outdoors */
+  font-variant-numeric: tabular-nums;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  line-height: 1;
+  white-space: nowrap;
+  color: inherit;
+  border: 1px solid currentColor;
+  border-radius: 999px;
+  padding: 0.25em 0.6em;
+
+  /* Selectable so it can be copied into a bug note. */
+  user-select: text;
+}
+
+.version-badge__sep {
+  opacity: 0.6;
+}
+
+/* Standard visually-hidden pattern: invisible on screen, read by screen readers.
+   Remove this block if your project already defines .sr-only globally. */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border-width: 0;
+}

@@ -2,6 +2,7 @@ import React, { useEffect, useState } from "react";
 import { supabase, emailToUsername } from "./supabaseClient";
 import Login from "./Login.jsx";
 import PlantingMap from "./PlantingMap.jsx";
+import VersionBadge from './VersionBadge';
 
 export default function App() {
   const [session, setSession] = useState(undefined); // undefined = loading, null = signed out
